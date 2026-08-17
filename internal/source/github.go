@@ -50,6 +50,15 @@ func (g *GitHub) Resolve(ctx context.Context, ref string) (identity.ID, []string
 		versions = append(versions, t.Name)
 	}
 
+	// GitHub's "latest release" excludes pre-releases and drafts, which
+	// raw tag order doesn't — prefer it as the default, per issue #9.
+	var latestRelease struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := g.getJSON(ctx, fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo), &latestRelease); err == nil {
+		versions = moveToFront(versions, latestRelease.TagName)
+	}
+
 	if len(versions) == 0 {
 		var repoInfo struct {
 			DefaultBranch string `json:"default_branch"`

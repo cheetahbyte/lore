@@ -39,7 +39,10 @@ func TestAdd_IndexesDefaultVersion(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	src := &fakeSource{
-		versions: []string{"v1.0.0", "v2.0.0"},
+		// Resolve is documented to return its preferred/default version
+		// first (see ingest.pickDefaultVersion) — v2.0.0 here mimics an
+		// adapter that's already identified it as the latest.
+		versions: []string{"v2.0.0", "v1.0.0"},
 		pages: map[string][]source.RawPage{
 			"example.com@v2.0.0": {{URL: "https://example.com/1", Content: "# Title\n\nHello world.", ContentType: "markdown"}},
 		},

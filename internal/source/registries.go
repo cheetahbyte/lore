@@ -29,7 +29,12 @@ func doJSON(ctx context.Context, client *http.Client, url string, out any) error
 }
 
 // NPM is the npm: Source adapter, decided in issue #8. Versions come from
-// the registry's own version list; readmes are per-version, per issue #9.
+// the registry's own version list; per issue #9, the default version
+// prefers the registry's own "latest" dist-tag over a blind semver-max
+// (which would otherwise pick prerelease/canary builds that carry a
+// higher base version than the actual stable release — confirmed against
+// the real react packument, where dist-tags.latest is 19.2.8 but the
+// highest semver-sortable version is a 19.3.0-canary-* build).
 type NPM struct{ HTTPClient *http.Client }
 
 func NewNPM() *NPM { return &NPM{HTTPClient: http.DefaultClient} }
@@ -50,14 +55,16 @@ func (n *NPM) Resolve(ctx context.Context, ref string) (identity.ID, []string, e
 	if err := doJSON(ctx, n.HTTPClient, "https://registry.npmjs.org/"+ref, &doc); err != nil {
 		return "", nil, fmt.Errorf("npm: fetch packument: %w", err)
 	}
+	if len(doc.Versions) == 0 {
+		return "", nil, fmt.Errorf("npm: package %q has no versions", ref)
+	}
 	versions := make([]string, 0, len(doc.Versions))
 	for v := range doc.Versions {
 		versions = append(versions, v)
 	}
 	sort.Strings(versions)
-	if len(versions) == 0 {
-		return "", nil, fmt.Errorf("npm: package %q has no versions", ref)
-	}
+	// "latest" leads the list — see the doc comment on NPM above.
+	versions = moveToFront(versions, doc.DistTags["latest"])
 	return identity.New(identity.NPM, ref), versions, nil
 }
 
@@ -70,11 +77,40 @@ func (n *NPM) Fetch(ctx context.Context, id identity.ID, version string) ([]RawP
 	if readme == "" {
 		readme = doc.Readme
 	}
-	if readme == "" {
-		return nil, nil
-	}
 	pageURL := fmt.Sprintf("https://www.npmjs.com/package/%s/v/%s", id.Ref(), version)
-	return []RawPage{{URL: pageURL, Content: readme, ContentType: "markdown"}}, nil
+	if readme != "" {
+		return []RawPage{{URL: pageURL, Content: readme, ContentType: "markdown"}}, nil
+	}
+
+	// Many packages (react among them) simply don't carry a readme in
+	// their registry metadata at all, at any level. unpkg.com serves the
+	// package's actual published files, so fall back to the README.md it
+	// shipped in the tarball rather than silently indexing nothing.
+	if content, err := fetchText(ctx, n.HTTPClient, fmt.Sprintf("https://unpkg.com/%s@%s/README.md", id.Ref(), version)); err == nil && content != "" {
+		return []RawPage{{URL: pageURL, Content: content, ContentType: "markdown"}}, nil
+	}
+
+	return nil, fmt.Errorf("npm: no readme found for %s@%s (checked registry metadata and unpkg.com)", id.Ref(), version)
+}
+
+// moveToFront reorders versions so that preferred (if present in the
+// slice) becomes element 0, leaving the rest in their existing order.
+// Adapters use this to hand ingest.pickDefaultVersion a source-specific
+// notion of "latest" instead of forcing a generic semver-max guess.
+func moveToFront(versions []string, preferred string) []string {
+	if preferred == "" {
+		return versions
+	}
+	for i, v := range versions {
+		if v == preferred {
+			out := make([]string, 0, len(versions))
+			out = append(out, preferred)
+			out = append(out, versions[:i]...)
+			out = append(out, versions[i+1:]...)
+			return out
+		}
+	}
+	return versions
 }
 
 // PyPI is the pypi: Source adapter, decided in issue #8.
@@ -87,6 +123,7 @@ func (p *PyPI) Type() identity.SourceType { return identity.PyPI }
 type pypiResponse struct {
 	Info struct {
 		Description string `json:"description"`
+		Version     string `json:"version"` // PyPI's own notion of the current release, per issue #9
 	} `json:"info"`
 	Releases map[string]json.RawMessage `json:"releases"`
 }
@@ -96,14 +133,15 @@ func (p *PyPI) Resolve(ctx context.Context, ref string) (identity.ID, []string, 
 	if err := doJSON(ctx, p.HTTPClient, "https://pypi.org/pypi/"+ref+"/json", &doc); err != nil {
 		return "", nil, fmt.Errorf("pypi: fetch project: %w", err)
 	}
+	if len(doc.Releases) == 0 {
+		return "", nil, fmt.Errorf("pypi: package %q has no releases", ref)
+	}
 	versions := make([]string, 0, len(doc.Releases))
 	for v := range doc.Releases {
 		versions = append(versions, v)
 	}
 	sort.Strings(versions)
-	if len(versions) == 0 {
-		return "", nil, fmt.Errorf("pypi: package %q has no releases", ref)
-	}
+	versions = moveToFront(versions, doc.Info.Version)
 	return identity.New(identity.PyPI, ref), versions, nil
 }
 
@@ -114,7 +152,7 @@ func (p *PyPI) Fetch(ctx context.Context, id identity.ID, version string) ([]Raw
 		return nil, fmt.Errorf("pypi: fetch release: %w", err)
 	}
 	if doc.Info.Description == "" {
-		return nil, nil
+		return nil, fmt.Errorf("pypi: no description found for %s@%s", id.Ref(), version)
 	}
 	pageURL := fmt.Sprintf("https://pypi.org/project/%s/%s/", id.Ref(), version)
 	return []RawPage{{URL: pageURL, Content: doc.Info.Description, ContentType: "markdown"}}, nil
@@ -161,6 +199,18 @@ func (g *GoPackage) Resolve(ctx context.Context, ref string) (identity.ID, []str
 	if len(versions) == 0 {
 		versions = []string{"latest"}
 	}
+
+	// The proxy's own @latest endpoint is the module-aware notion of
+	// "current version" (respects major-version suffixes and pseudo-
+	// versions the way @v/list's raw tag listing doesn't), so prefer it
+	// as the default, per issue #9.
+	var latest struct {
+		Version string `json:"Version"`
+	}
+	if err := doJSON(ctx, g.HTTPClient, "https://proxy.golang.org/"+ref+"/@latest", &latest); err == nil {
+		versions = moveToFront(versions, latest.Version)
+	}
+
 	return identity.New(identity.GoPackage, ref), versions, nil
 }
 

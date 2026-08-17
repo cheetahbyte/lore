@@ -18,7 +18,6 @@ import (
 	"github.com/cheetahbyte/lore/internal/identity"
 	"github.com/cheetahbyte/lore/internal/source"
 	"github.com/cheetahbyte/lore/internal/store"
-	"golang.org/x/mod/semver"
 )
 
 type Pipeline struct {
@@ -90,6 +89,9 @@ func (p *Pipeline) indexVersion(ctx context.Context, src source.Source, id ident
 	pages, err := src.Fetch(ctx, id, version)
 	if err != nil {
 		return fmt.Errorf("ingest: fetch %s@%s: %w", id, version, err)
+	}
+	if len(pages) == 0 {
+		return fmt.Errorf("ingest: %s@%s resolved but no content was fetched — nothing indexed", id, version)
 	}
 
 	existingHashes, err := p.Store.ContentHashes(ctx, store.LocalTenant, id.String(), version)
@@ -177,39 +179,20 @@ func splitRefAndVersion(ref string) (sourceType, adapterRef, version string) {
 	return t, rest, ""
 }
 
-// pickDefaultVersion mirrors the semver-aware default from issue #9 (also
-// implemented in store.pickLatest, which the Store uses once versions are
-// already indexed) — Add needs the same rule before anything's in the
-// Store yet, to decide what to fetch in the first place.
+// pickDefaultVersion implements the default-version rule from issue #9.
+// Each Source.Resolve implementation is responsible for ordering its
+// returned versions with its own best notion of "latest" first — the
+// registry's own latest marker (npm's dist-tags, PyPI's info.version, the
+// Go module proxy's @latest, GitHub's "latest release") where one exists,
+// since that's not always the same as the highest semver-sortable version
+// (e.g. npm prerelease/canary builds routinely carry a higher base version
+// number than the actual stable release). This function just trusts that
+// ordering rather than re-deriving it generically.
 func pickDefaultVersion(versions []string) string {
 	if len(versions) == 0 {
 		return ""
 	}
-	best := versions[0]
-	bestKey := semverKey(best)
-	for _, v := range versions[1:] {
-		key := semverKey(v)
-		switch {
-		case key != "" && (bestKey == "" || semver.Compare(key, bestKey) > 0):
-			best, bestKey = v, key
-		case key == "" && bestKey == "" && v > best:
-			best = v
-		}
-	}
-	return best
-}
-
-// semverKey normalizes v into a form golang.org/x/mod/semver accepts (it
-// requires a leading "v"), returning "" if v still isn't valid semver.
-func semverKey(v string) string {
-	k := v
-	if !strings.HasPrefix(k, "v") {
-		k = "v" + k
-	}
-	if !semver.IsValid(k) {
-		return ""
-	}
-	return k
+	return versions[0]
 }
 
 // allUnchanged reports whether every fetched page's content hash matches
