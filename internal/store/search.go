@@ -18,7 +18,7 @@ import (
 func (s *SQLite) SearchChunks(ctx context.Context, req SearchRequest) ([]ScoredChunk, error) {
 	topK := req.TopK
 	if topK <= 0 {
-		topK = 10
+		topK = 5
 	}
 
 	version := req.Version

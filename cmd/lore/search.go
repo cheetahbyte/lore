@@ -41,6 +41,6 @@ func newSearchCmd(app *App) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().IntVar(&topK, "top-k", 10, "maximum number of results")
+	cmd.Flags().IntVar(&topK, "top-k", 5, "maximum number of results")
 	return cmd
 }

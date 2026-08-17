@@ -98,7 +98,7 @@ type searchDocsInput struct {
 	LibraryID string `json:"library_id" jsonschema:"canonical library id from resolve_library, e.g. 'github:owner/repo'"`
 	Version   string `json:"version,omitempty" jsonschema:"specific version to search; omit to use the latest"`
 	Query     string `json:"query" jsonschema:"search query"`
-	TopK      int    `json:"top_k,omitempty" jsonschema:"maximum number of results to return; defaults to 10"`
+	TopK      int    `json:"top_k,omitempty" jsonschema:"maximum number of results to return; defaults to 5"`
 }
 
 type chunkOut struct {
