@@ -34,12 +34,19 @@ lore add url:https://docs.example.com --depth 2 --include /docs/
 
 lore list                          # what's indexed
 lore search github:owner/repo "how do I configure X"
-lore refresh                       # re-fetch everything, skip unchanged content
-lore serve                         # run the MCP server over stdio
+  lore refresh                       # re-fetch everything, skip unchanged content
+  lore sync                          # discover and index dependencies from the current project
+  lore watch                         # keep dependency docs current while manifests change
+  lore serve                         # run the MCP server over stdio
 ```
 
 Point any MCP client at `lore serve`. It exposes three tools:
 `list_libraries`, `resolve_library`, `search_docs`.
+
+`lore sync` discovers dependencies from `package.json`/`package-lock.json`,
+`go.mod`, and `requirements.txt`, preferring exact versions from lockfiles.
+`lore watch` runs the same sync when those manifests change. Bare references
+such as `lore add react` are also inferred against supported package sources.
 
 ## Config
 

@@ -34,16 +34,33 @@ type Pipeline struct {
 // yet — callers must give the type prefix explicitly for now.
 func (p *Pipeline) Add(ctx context.Context, ref string) (identity.ID, string, error) {
 	typePart, adapterRef, pinnedVersion := splitRefAndVersion(ref)
-	src, ok := p.Sources.For(identity.SourceType(typePart))
+	var src source.Source
+	var ok bool
+	if adapterRef == "" {
+		return "", "", fmt.Errorf("ingest: empty source reference %q", ref)
+	}
+	if typePart == "" {
+		for _, candidate := range []identity.SourceType{identity.NPM, identity.PyPI, identity.GoPackage} {
+			if src, ok = p.Sources.For(candidate); ok {
+				if id, versions, err := src.Resolve(ctx, ref); err == nil {
+					return p.indexResolved(ctx, src, id, versions, pinnedVersion)
+				}
+			}
+		}
+		return "", "", fmt.Errorf("ingest: could not infer a source for %q", ref)
+	}
+	src, ok = p.Sources.For(identity.SourceType(typePart))
 	if !ok {
 		return "", "", fmt.Errorf("ingest: unknown source type %q (expected one of github, npm, pypi, pkg.go.dev, llms-txt, url)", typePart)
 	}
-
 	id, versions, err := src.Resolve(ctx, adapterRef)
 	if err != nil {
 		return "", "", fmt.Errorf("ingest: resolve %q: %w", ref, err)
 	}
+	return p.indexResolved(ctx, src, id, versions, pinnedVersion)
+}
 
+func (p *Pipeline) indexResolved(ctx context.Context, src source.Source, id identity.ID, versions []string, pinnedVersion string) (identity.ID, string, error) {
 	version := pinnedVersion
 	if version == "" {
 		version = pickDefaultVersion(versions)
@@ -103,18 +120,15 @@ func (p *Pipeline) indexVersion(ctx context.Context, src source.Source, id ident
 		return nil
 	}
 
-	// UpsertChunks replaces the whole library+version in one call (see
-	// store.Store), so every fetched page has to be (re)chunked here, not
-	// just the ones whose content_hash changed — otherwise an unchanged
-	// page's prior chunks would simply vanish instead of being kept.
-	// content_hash-based skipping of the expensive re-embed step for
-	// unchanged pages (the optimization issue #12 actually describes)
-	// needs the Store to hand back existing embeddings for reuse, which
-	// isn't wired up yet — a worthwhile follow-up, not implemented here.
 	now := time.Now()
-	var allChunks []chunk.Chunk
+	seenURLs := make(map[string]bool, len(pages))
+	totalChunks := 0
 	for _, page := range pages {
+		seenURLs[page.URL] = true
 		hash := contentHash(page.Content)
+		if existingHashes[page.URL] == hash {
+			continue
+		}
 		pieces := chunk.Split(page.Content, chunk.DefaultTargetSize)
 		texts := make([]string, len(pieces))
 		for i, piece := range pieces {
@@ -129,29 +143,27 @@ func (p *Pipeline) indexVersion(ctx context.Context, src source.Source, id ident
 			}
 		}
 
+		pageChunks := make([]chunk.Chunk, 0, len(pieces))
 		for i, piece := range pieces {
-			c := chunk.Chunk{
-				TenantID:    store.LocalTenant,
-				LibraryID:   id.String(),
-				Version:     version,
-				DocURL:      page.URL,
-				SectionPath: piece.SectionPath,
-				Ordinal:     i,
-				Content:     piece.Content,
-				ContentHash: hash,
-				FetchedAt:   now,
-			}
+			c := chunk.Chunk{TenantID: store.LocalTenant, LibraryID: id.String(), Version: version, DocURL: page.URL, SectionPath: piece.SectionPath, Ordinal: i, Content: piece.Content, ContentHash: hash, FetchedAt: now}
 			if embeddings != nil && i < len(embeddings) {
 				c.Embedding = embeddings[i]
 			}
-			allChunks = append(allChunks, c)
+			pageChunks = append(pageChunks, c)
+		}
+		totalChunks += len(pageChunks)
+		if err := p.Store.UpsertDocumentChunks(ctx, store.LocalTenant, id.String(), version, page.URL, pageChunks); err != nil {
+			return fmt.Errorf("ingest: store document %s: %w", page.URL, err)
 		}
 	}
-
-	if err := p.Store.UpsertChunks(ctx, store.LocalTenant, id.String(), version, allChunks); err != nil {
-		return fmt.Errorf("ingest: store chunks: %w", err)
+	for url := range existingHashes {
+		if !seenURLs[url] {
+			if err := p.Store.DeleteDocument(ctx, store.LocalTenant, id.String(), version, url); err != nil {
+				return fmt.Errorf("ingest: remove document %s: %w", url, err)
+			}
+		}
 	}
-	p.logger().Info("indexed", "library_id", id.String(), "version", version, "chunks", len(allChunks), "pages", len(pages))
+	p.logger().Info("indexed", "library_id", id.String(), "version", version, "chunks", totalChunks, "pages", len(pages))
 	return nil
 }
 
@@ -172,7 +184,13 @@ func contentHash(content string) string {
 // splits from the right so it doesn't collide with npm scoped package
 // names like "npm:@scope/name".
 func splitRefAndVersion(ref string) (sourceType, adapterRef, version string) {
-	t, rest, _ := strings.Cut(ref, ":")
+	t, rest, found := strings.Cut(ref, ":")
+	if !found {
+		if idx := strings.LastIndex(ref, "@"); idx > 0 {
+			return "", ref[:idx], ref[idx+1:]
+		}
+		return "", ref, ""
+	}
 	if idx := strings.LastIndex(rest, "@"); idx > 0 {
 		return t, rest[:idx], rest[idx+1:]
 	}

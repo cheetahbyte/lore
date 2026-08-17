@@ -51,6 +51,8 @@ type Store interface {
 	// UpsertChunks replaces all chunks for the given library+version with
 	// the ones provided (a full re-index of that library+version).
 	UpsertChunks(ctx context.Context, tenantID, libraryID, version string, chunks []chunk.Chunk) error
+	UpsertDocumentChunks(ctx context.Context, tenantID, libraryID, version, docURL string, chunks []chunk.Chunk) error
+	DeleteDocument(ctx context.Context, tenantID, libraryID, version, docURL string) error
 
 	// DeleteLibrary removes a library, or one of its versions if version
 	// is non-empty. Mirrors `lore remove`, issue #3.

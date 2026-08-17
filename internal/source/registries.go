@@ -48,6 +48,9 @@ type npmPackument struct {
 }
 type npmVersionEntry struct {
 	Readme string `json:"readme"`
+	Dist   struct {
+		Tarball string `json:"tarball"`
+	} `json:"dist"`
 }
 
 func (n *NPM) Resolve(ctx context.Context, ref string) (identity.ID, []string, error) {
@@ -88,6 +91,13 @@ func (n *NPM) Fetch(ctx context.Context, id identity.ID, version string) ([]RawP
 	// shipped in the tarball rather than silently indexing nothing.
 	if content, err := fetchText(ctx, n.HTTPClient, fmt.Sprintf("https://unpkg.com/%s@%s/README.md", id.Ref(), version)); err == nil && content != "" {
 		return []RawPage{{URL: pageURL, Content: content, ContentType: "markdown"}}, nil
+	}
+	if entry := doc.Versions[version]; entry.Dist.Tarball != "" {
+		if body, err := fetchBody(ctx, n.HTTPClient, entry.Dist.Tarball); err == nil {
+			if pages, archiveErr := archivePages(body, pageURL); archiveErr == nil && len(pages) > 0 {
+				return pages, nil
+			}
+		}
 	}
 
 	return nil, fmt.Errorf("npm: no readme found for %s@%s (checked registry metadata and unpkg.com)", id.Ref(), version)
@@ -225,21 +235,30 @@ func (g *GoPackage) Fetch(ctx context.Context, id identity.ID, version string) (
 }
 
 func fetchText(ctx context.Context, client *http.Client, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	body, err := fetchBody(ctx, client, url)
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
-	}
-	b, err := io.ReadAll(resp.Body)
+	defer body.Close()
+	b, err := io.ReadAll(body)
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
+}
+
+func fetchBody(ctx context.Context, client *http.Client, url string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
+	}
+	return resp.Body, nil
 }

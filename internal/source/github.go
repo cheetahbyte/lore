@@ -88,6 +88,13 @@ func (g *GitHub) Fetch(ctx context.Context, id identity.ID, version string) ([]R
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
+	archiveURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/tarball/%s", owner, repo, version)
+	if body, err := g.get(ctx, archiveURL, "application/vnd.github+json"); err == nil {
+		defer body.Close()
+		if pages, archiveErr := archivePages(body, fmt.Sprintf("https://github.com/%s/%s/blob/%s", owner, repo, version)); archiveErr == nil && len(pages) > 0 {
+			return pages, nil
+		}
+	}
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, version)
 	if err := g.getJSON(ctx, url, &tree); err != nil {
 		return nil, fmt.Errorf("github: get tree: %w", err)

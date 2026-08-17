@@ -42,6 +42,8 @@ func run() error {
 		newListCmd(app),
 		newRefreshCmd(app),
 		newSearchCmd(app),
+		newSyncCmd(app),
+		newWatchCmd(app),
 		newServeCmd(app),
 	)
 
