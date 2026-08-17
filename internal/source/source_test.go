@@ -1,6 +1,13 @@
 package source
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 func TestIsDocPath(t *testing.T) {
 	cases := map[string]bool{
@@ -27,7 +34,7 @@ func TestMoveToFront(t *testing.T) {
 		{[]string{"1.0.0", "2.0.0", "3.0.0"}, "2.0.0", []string{"2.0.0", "1.0.0", "3.0.0"}},
 		{[]string{"1.0.0", "2.0.0"}, "1.0.0", []string{"1.0.0", "2.0.0"}},
 		{[]string{"1.0.0", "2.0.0"}, "9.9.9", []string{"1.0.0", "2.0.0"}}, // not present: unchanged
-		{[]string{"1.0.0", "2.0.0"}, "", []string{"1.0.0", "2.0.0"}},     // no preference: unchanged
+		{[]string{"1.0.0", "2.0.0"}, "", []string{"1.0.0", "2.0.0"}},      // no preference: unchanged
 	}
 	for _, c := range cases {
 		got := moveToFront(append([]string(nil), c.versions...), c.preferred)
@@ -57,5 +64,45 @@ func TestExtractMarkdownLinks(t *testing.T) {
 		if !want[l] {
 			t.Errorf("unexpected link %q", l)
 		}
+	}
+}
+
+func TestLLMsTxtFetchFollowsLargeIndex(t *testing.T) {
+	const linkCount = 25
+
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/llms-full.txt":
+			http.NotFound(w, r)
+		case "/llms.txt":
+			var index strings.Builder
+			for i := range linkCount {
+				fmt.Fprintf(&index, "- [Page %d](%s/docs/%d.md)\n", i, server.URL, i)
+			}
+			_, _ = w.Write([]byte(index.String()))
+		default:
+			_, _ = fmt.Fprintf(w, "# Page\n\nContent for %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	source := &LLMsTxt{HTTPClient: server.Client()}
+	id, _, err := source.Resolve(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	pages, err := source.Fetch(context.Background(), id, "")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	// The index itself plus every linked page should be fetched. This guards
+	// against a low crawl cap silently omitting entries late in real indexes.
+	if got, want := len(pages), linkCount+1; got != want {
+		t.Fatalf("fetched %d pages, want %d", got, want)
+	}
+	if !strings.Contains(pages[len(pages)-1].Content, "/docs/24.md") {
+		t.Errorf("last linked page was not fetched: %q", pages[len(pages)-1].Content)
 	}
 }

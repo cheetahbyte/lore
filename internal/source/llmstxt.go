@@ -11,9 +11,11 @@ import (
 	"github.com/cheetahbyte/lore/internal/identity"
 )
 
-// maxLLMsTxtLinks caps how many pages an llms.txt's link list gets
-// followed to, so a single `lore add` can't turn into an unbounded crawl.
-const maxLLMsTxtLinks = 20
+// maxLLMsTxtLinks caps how many entries from an llms.txt link list are
+// followed, so a single `lore add` can't turn into an unbounded crawl. Keep
+// this high enough for real-world indexes such as react.dev, which currently
+// lists well over 100 documentation pages.
+const maxLLMsTxtLinks = 500
 
 // LLMsTxt is the llms-txt: Source adapter, decided in issue #8. Sites of
 // this type have no version concept, per issue #9 — Resolve always
@@ -47,10 +49,11 @@ func (l *LLMsTxt) Fetch(ctx context.Context, id identity.ID, version string) ([]
 
 	pages := []RawPage{{URL: sourceURL, Content: content, ContentType: "markdown"}}
 
-	for _, linkURL := range extractMarkdownLinks(content, base) {
-		if len(pages) >= maxLLMsTxtLinks {
-			break
-		}
+	links := extractMarkdownLinks(content, base)
+	if len(links) > maxLLMsTxtLinks {
+		links = links[:maxLLMsTxtLinks]
+	}
+	for _, linkURL := range links {
 		linked, err := l.fetchText(ctx, linkURL)
 		if err != nil {
 			continue // skip individual link failures
