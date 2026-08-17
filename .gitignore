@@ -1,0 +1,6 @@
+/lore
+/dist/
+*.db
+*.db-wal
+*.db-shm
+.claude/worktrees/
